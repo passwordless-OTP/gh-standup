@@ -17,7 +17,7 @@ const extensionName = "standup"
 var rootCmd = &cobra.Command{
 	Use:   extensionName,
 	Short: "Generate AI-powered standup reports",
-	Long:  "A GitHub CLI extension that generates standup reports using GitHub Models or GitHub Copilot and GitHub API data",
+	Long:  "A GitHub CLI extension that generates standup reports using OpenAI Codex, GitHub Copilot, or GitHub Models and GitHub API data",
 	RunE:  runStandup,
 }
 
@@ -33,7 +33,7 @@ var (
 func init() {
 	rootCmd.Flags().IntVarP(&flagDays, "days", "d", 1, "Number of days to look back for activity")
 	rootCmd.Flags().StringVarP(&flagModel, "model", "m", "", "Model to use (GitHub Models ID by default, GitHub Copilot model ID when --provider=copilot)")
-	rootCmd.Flags().StringVar(&flagProvider, "provider", string(llm.ProviderGitHubModels), "Inference provider to use (github-models or copilot)")
+	rootCmd.Flags().StringVar(&flagProvider, "provider", string(llm.ProviderCodex), "Inference provider to use (codex, github-models or copilot)")
 	rootCmd.Flags().StringVarP(&flagRepo, "repo", "r", "", "Repository to generate standup for (owner/repo)")
 	rootCmd.Flags().StringVarP(&flagUser, "user", "u", "", "User to generate standup for (defaults to authenticated user)")
 	rootCmd.Flags().StringVarP(&flagLanguage, "language", "l", "English", "Language for the standup report (e.g., Korean, Japanese, Spanish)")
