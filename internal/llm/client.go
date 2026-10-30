@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -66,6 +67,7 @@ type Provider string
 const (
 	ProviderGitHubModels Provider = "github-models"
 	ProviderCopilot      Provider = "copilot"
+	ProviderCodex        Provider = "codex"
 )
 
 const (
@@ -81,6 +83,7 @@ type Client struct {
 	provider       Provider
 	token          string
 	copilotCLIPath string
+	codexCLIPath   string
 }
 
 // Simple mapping from model name (lowercase) to a safe default temperature
@@ -109,10 +112,10 @@ func ParseProvider(value string) (Provider, error) {
 	}
 
 	switch Provider(normalized) {
-	case ProviderGitHubModels, ProviderCopilot:
+	case ProviderGitHubModels, ProviderCopilot, ProviderCodex:
 		return Provider(normalized), nil
 	default:
-		return "", fmt.Errorf("unsupported inference provider %q (expected %q or %q)", value, ProviderGitHubModels, ProviderCopilot)
+		return "", fmt.Errorf("unsupported inference provider %q (expected %q, %q or %q)", value, ProviderGitHubModels, ProviderCopilot, ProviderCodex)
 	}
 }
 
@@ -152,6 +155,20 @@ func NewClient(options Options) (*Client, error) {
 		return &Client{
 			provider:       provider,
 			copilotCLIPath: cliPath,
+		}, nil
+	case ProviderCodex:
+		fmt.Print("  Checking OpenAI Codex CLI... ")
+
+		cliPath, err := exec.LookPath("codex")
+		if err != nil {
+			fmt.Println("Failed")
+			return nil, fmt.Errorf("OpenAI Codex CLI not found. Install it and authenticate (e.g. 'codex login') before using --provider=%s", ProviderCodex)
+		}
+		fmt.Println("Done")
+
+		return &Client{
+			provider:     provider,
+			codexCLIPath: cliPath,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported inference provider %q", provider)
@@ -224,6 +241,24 @@ func (c *Client) GenerateStandupReport(activities []types.GitHubActivity, model 
 		}
 		fmt.Println("Done")
 		return strings.TrimSpace(response), nil
+	case ProviderCodex:
+		systemMessage, prompt, err := buildCopilotPrompt(messages)
+		if err != nil {
+			return "", err
+		}
+
+		if selectedModel != "" {
+			fmt.Printf("  Calling OpenAI Codex (model %s)... ", selectedModel)
+		} else {
+			fmt.Print("  Calling OpenAI Codex... ")
+		}
+		response, err := c.callCodex(systemMessage, prompt, selectedModel)
+		if err != nil {
+			fmt.Println("Failed")
+			return "", err
+		}
+		fmt.Println("Done")
+		return strings.TrimSpace(response), nil
 	default:
 		return "", fmt.Errorf("unsupported inference provider %q", c.provider)
 	}
@@ -252,6 +287,11 @@ func (c *Client) resolveModel(requestedModel string, promptDefault string) strin
 
 	if c.provider == ProviderCopilot {
 		return defaultCopilotModel
+	}
+
+	if c.provider == ProviderCodex {
+		// An empty model lets the Codex CLI use its own configured default
+		return ""
 	}
 
 	if promptDefault != "" {
@@ -491,4 +531,55 @@ func buildCopilotPrompt(messages []Message) (string, string, error) {
 
 func denyAllCopilotPermissions(_ copilot.PermissionRequest, _ copilot.PermissionInvocation) (copilotrpc.PermissionDecision, error) {
 	return &copilotrpc.PermissionDecisionReject{}, nil
+}
+
+// callCodex runs the standup prompt through the OpenAI Codex CLI, which uses
+// the user's existing Codex/ChatGPT authentication. The prompt is passed via
+// stdin and Codex runs with a read-only sandbox in an empty scratch directory
+// so it cannot touch the user's working tree.
+func (c *Client) callCodex(systemMessage string, prompt string, model string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	tmpDir, err := os.MkdirTemp("", "gh-standup-codex-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create scratch directory for Codex: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	fullPrompt := prompt
+	if systemMessage != "" {
+		fullPrompt = systemMessage + "\n\n" + prompt
+	}
+
+	args := []string{"exec", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", tmpDir}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	args = append(args, "-")
+
+	cmd := exec.CommandContext(ctx, c.codexCLIPath, args...)
+	cmd.Stdin = strings.NewReader(fullPrompt)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("OpenAI Codex timed out after 5 minutes")
+		}
+		return "", fmt.Errorf("OpenAI Codex failed: %w: %s", err, tailLines(stderr.String(), 5))
+	}
+
+	return stdout.String(), nil
+}
+
+// tailLines returns the last n lines of s, trimmed of surrounding whitespace.
+func tailLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
 }
