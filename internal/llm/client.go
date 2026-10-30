@@ -15,6 +15,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/gh-standup/internal/types"
 	copilot "github.com/github/copilot-sdk/go"
+	copilotrpc "github.com/github/copilot-sdk/go/rpc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -69,7 +70,7 @@ const (
 
 const (
 	defaultGitHubModelsModel = "openai/gpt-4o"
-	defaultCopilotModel      = "gpt-4.1"
+	defaultCopilotModel      = "auto"
 )
 
 type Options struct {
@@ -382,8 +383,8 @@ func (c *Client) callGitHubCopilot(messages []Message, selectedModel string) (st
 	defer cancel()
 
 	client := copilot.NewClient(&copilot.ClientOptions{
-		CLIPath:  c.copilotCLIPath,
-		LogLevel: "error",
+		Connection: copilot.StdioConnection{Path: c.copilotCLIPath},
+		LogLevel:   "error",
 	})
 
 	if err := client.Start(ctx); err != nil {
@@ -488,8 +489,6 @@ func buildCopilotPrompt(messages []Message) (string, string, error) {
 	return strings.Join(systemParts, "\n\n"), strings.Join(promptParts, "\n\n"), nil
 }
 
-func denyAllCopilotPermissions(_ copilot.PermissionRequest, _ copilot.PermissionInvocation) (copilot.PermissionRequestResult, error) {
-	return copilot.PermissionRequestResult{
-		Kind: copilot.PermissionRequestResultKindDeniedByRules,
-	}, nil
+func denyAllCopilotPermissions(_ copilot.PermissionRequest, _ copilot.PermissionInvocation) (copilotrpc.PermissionDecision, error) {
+	return &copilotrpc.PermissionDecisionReject{}, nil
 }
